@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -19,16 +20,21 @@ logging.basicConfig(
 
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True
+intents.messages = True
 
 client = commands.Bot(command_prefix="/", intents=intents)
 
-_cogs = [
-    cogs.admin_commands.AdminCommands(client),
-    cogs.public_commands.PublicCommands(client),
-]
-for cog in _cogs:
-    client.add_cog(cog)
+async def setup(client):
+    _cogs = [
+        cogs.admin_commands.AdminCommands(client),
+        cogs.public_commands.PublicCommands(client),
+    ]
 
+    for cog in _cogs:
+        await client.add_cog(cog)
+
+asyncio.run(setup(client))
 
 @client.event
 async def on_command_error(ctx, error):
@@ -43,11 +49,54 @@ async def on_ready():
     logging.info("We have logged in as {0.user}".format(client))
 
 
+async def handle_survey_message(message):
+    guild = get_server(client)
+    if message.author.id != guild.me.id:
+        if (
+            survey_id := db.get_survey_id_from_user_survey_progress_or_none(
+                message.author.id, message.channel.id
+            )
+        ) is not None:
+            logging.info(f"Received survey answer as a message.")
+            question = db.get_current_survey_question_or_none(
+                message.author.id, survey_id
+            )
+            logging.info(f"Current question: {question}.")
+            if question is None:
+                logging.info(f"Current question is null.")
+                return
+
+            if not is_question_open_ended(question):
+                logging.info(
+                    f"Received message in a survey channel with non-open-ended question."
+                )
+                return
+
+            logging.info(f"Storing message '{message.content}' answer")
+            try:
+                await add_survey_answer(
+                    client=client,
+                    member=message.author,
+                    survey_id=survey_id,
+                    question_id=question[0],
+                    message=message,
+                    is_open_ended=True,
+                    emoji=None,
+                )
+            except ValueError as e:
+                logging.error(f"Error while adding survey answer. {e}")
+
+            # don't process commands if answer was being submitted
+            return
+
+    # await client.process_commands(message)
+
 @client.event
 async def on_message(message):
     if message.author == client.user:
         return
 
+    await handle_survey_message(message)
     await client.process_commands(message)
 
 
@@ -103,50 +152,6 @@ async def on_raw_reaction_remove(payload):
                     question_id=question_id,
                     emoji=payload.emoji,
                 )
-
-
-@client.event
-async def on_message(message):
-    guild = get_server(client)
-    if message.author.id != guild.me.id:
-        if (
-            survey_id := db.get_survey_id_from_user_survey_progress_or_none(
-                message.author.id, message.channel.id
-            )
-        ) is not None:
-            logging.info(f"Received survey answer as a message.")
-            question = db.get_current_survey_question_or_none(
-                message.author.id, survey_id
-            )
-            logging.info(f"Current question: {question}.")
-            if question is None:
-                logging.info(f"Current question is null.")
-                return
-
-            if not is_question_open_ended(question):
-                logging.info(
-                    f"Received message in a survey channel with non-open-ended question."
-                )
-                return
-
-            logging.info(f"Storing message '{message.content}' answer")
-            try:
-                await add_survey_answer(
-                    client=client,
-                    member=message.author,
-                    survey_id=survey_id,
-                    question_id=question[0],
-                    message=message,
-                    is_open_ended=True,
-                    emoji=None,
-                )
-            except ValueError as e:
-                logging.error(f"Error while adding survey answer. {e}")
-
-            # don't process commands if answer was being submitted
-            return
-
-    await client.process_commands(message)
 
 
 @client.event
